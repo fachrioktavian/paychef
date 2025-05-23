@@ -1,2 +1,6 @@
 sc.txt
 paychef
+encrypted_shellcode.bin
+iv.bin
+key.bin
+sc2.txt
